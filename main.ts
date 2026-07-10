@@ -1,37 +1,70 @@
-// A WebGPU context must exist before the native surface can be wrapped, so
-// acquire the adapter and device first.
 const adapter = await navigator.gpu.requestAdapter();
 if (!adapter) throw new Error("no WebGPU adapter available");
 const device = await adapter.requestDevice();
 
 const win = new Deno.BrowserWindow({
-  title: "WebGPU",
-  // width: 640,
-  // height: 480,
+  title: "Triangle",
+  width: 640,
+  height: 480,
 });
 
-// Wrap the native window as a surface and configure a WebGPU context on it.
 const surface = win.getNativeWindow();
 const format = navigator.gpu.getPreferredCanvasFormat();
-const context = surface.getContext("webgpu") as GPUCanvasContext | null;
-if (!context) throw new Error("failed to acquire GPU canvas contex");
+const context = surface.getContext("webgpu");
 context.configure({ device, format, alphaMode: "opaque" });
 
-// FIXME this hits an upstream panic on wayland
-// // Match the surface to the window before the first frame.
-// const [width, height] = win.getSize();
-// surface.width = width;
-// surface.height = height;
+// The vertex stage emits three corners; the fragment stage receives the
+// color interpolated between them.
+const shader = device.createShaderModule({
+  code: `
+    struct VertexOut {
+      @builtin(position) pos: vec4f,
+      @location(0) color: vec3f,
+    };
 
-// Clear the frame to teal and present it.
+    @vertex
+    fn vs(@builtin(vertex_index) i: u32) -> VertexOut {
+      var positions = array<vec2f, 3>(
+        vec2f( 0.0,  0.6),
+        vec2f(-0.6, -0.6),
+        vec2f( 0.6, -0.6),
+      );
+      var colors = array<vec3f, 3>(
+        vec3f(1.0, 0.0, 0.0),
+        vec3f(0.0, 1.0, 0.0),
+        vec3f(0.0, 0.0, 1.0),
+      );
+      var out: VertexOut;
+      out.pos = vec4f(positions[i], 0.0, 1.0);
+      out.color = colors[i];
+      return out;
+    }
+
+    @fragment
+    fn fs(in: VertexOut) -> @location(0) vec4f {
+      return vec4f(in.color, 1.0);
+    }
+  `,
+});
+
+const pipeline = device.createRenderPipeline({
+  layout: "auto",
+  vertex: { module: shader, entryPoint: "vs" },
+  fragment: { module: shader, entryPoint: "fs", targets: [{ format }] },
+  primitive: { topology: "triangle-list" },
+});
+
 const encoder = device.createCommandEncoder();
-encoder.beginRenderPass({
+const pass = encoder.beginRenderPass({
   colorAttachments: [{
     view: context.getCurrentTexture().createView(),
-    clearValue: { r: 0, g: 0.5, b: 0.5, a: 1 },
+    clearValue: { r: 0.05, g: 0.05, b: 0.08, a: 1 },
     loadOp: "clear",
     storeOp: "store",
   }],
-}).end();
+});
+pass.setPipeline(pipeline);
+pass.draw(3);
+pass.end();
 device.queue.submit([encoder.finish()]);
 surface.present();
